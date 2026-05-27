@@ -1,0 +1,94 @@
+.TH GOT-AUDIT 1 "2026-05-27" "got-audit 1.0.0" "User Commands"
+.SH NAME
+got-audit \- audit the Global Offset Table of running processes
+.SH SYNOPSIS
+.B got-audit
+.RB [ \-a | \-\-all ]
+.RB [ \-h | \-\-help ]
+.I PID
+.SH DESCRIPTION
+.B got-audit
+attaches to a running process and examines its Global Offset Table (GOT) to detect
+potential security issues such as symbol hijacking, namespace tampering, and unexpected
+symbol resolution.
+
+The tool parses ELF files using libelf, reads process memory via ptrace, and compares
+GOT entries against symbol exports from loaded libraries. It reports warnings when:
+.IP \(bu 2
+A symbol is exported by multiple libraries (excluding known duplicates)
+.IP \(bu 2
+A symbol resolves to a library that does not export it
+.PP
+This helps identify LD_PRELOAD attacks, library injection, and other runtime exploitation
+techniques that modify symbol resolution.
+.SH OPTIONS
+.TP
+.BR \-a ", " \-\-all
+Audit GOT for all mapped ELF objects in the process, not just the main executable.
+.TP
+.BR \-h ", " \-\-help
+Display help message and exit.
+.SH ARGUMENTS
+.TP
+.I PID
+Process ID to audit. Must be a valid running process that the user has permission to
+attach to via ptrace.
+.SH OUTPUT
+The tool displays a report for each audited ELF object showing:
+.IP \(bu 2
+GOT protection status (Full RelRO, Partial RelRO, or No RelRO)
+.IP \(bu 2
+Number of GOT function entries
+.IP \(bu 2
+Each symbol with its resolved library (color-coded: green for resolved, yellow for
+unresolved)
+.IP \(bu 2
+Warnings in red for security issues
+.SH EXIT STATUS
+.TP
+.B 0
+Success
+.TP
+.B 1
+Error (invalid arguments, failed to attach, etc.)
+.SH EXAMPLES
+.PP
+Audit the main executable of process 1234:
+.RS
+.B got-audit 1234
+.RE
+.PP
+Audit all loaded libraries in process 1234:
+.RS
+.B got-audit \-\-all 1234
+.RE
+.SH SECURITY
+This tool requires CAP_SYS_PTRACE capability or root privileges to attach to processes.
+The target process is temporarily paused while attached.
+
+Only audit processes you own or have explicit permission to inspect.
+.SH KNOWN LIMITATIONS
+.IP \(bu 2
+Only supports ELF binaries
+.IP \(bu 2
+Tested on x86_64, i386, and aarch64 architectures
+.IP \(bu 2
+Target process must be running (cannot audit core dumps)
+.SH FILES
+.TP
+.I /proc/PID/maps
+Used to read process memory mappings
+.SH SEE ALSO
+.BR gdb (1),
+.BR ldd (1),
+.BR nm (1),
+.BR objdump (1),
+.BR readelf (1),
+.BR ptrace (2),
+.BR elf (5)
+.SH ORIGIN
+This tool is a C++ port of the
+.B got-audit
+command from GEF (GDB Enhanced Features), originally written in Python as a GDB plugin.
+.SH AUTHOR
+Ported from the GEF project.

@@ -1,0 +1,14 @@
+build/
+*.o
+*.a
+*.so
+got-audit
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
