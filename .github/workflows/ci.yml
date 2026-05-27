@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        compiler: [gcc, clang]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          cmake \
+          libelf-dev \
+          ${{ matrix.compiler == 'clang' && 'clang' || 'g++' }}
+
+    - name: Configure CMake
+      env:
+        CC: ${{ matrix.compiler == 'clang' && 'clang' || 'gcc' }}
+        CXX: ${{ matrix.compiler == 'clang' && 'clang++' || 'g++' }}
+      run: |
+        mkdir build
+        cd build
+        cmake .. -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build
+      run: |
+        cd build
+        make -j$(nproc)
+
+    - name: Verify binary
+      run: |
+        ./build/got-audit --version
+        ./build/got-audit --help
+
+    - name: Run tests
+      run: |
+        cd tests
+        ./run_tests.sh
+
+  build-fedora:
+    name: Build on Fedora
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Install dependencies
+      run: |
+        dnf install -y \
+          cmake \
+          gcc-c++ \
+          elfutils-libelf-devel \
+          make
+
+    - name: Build
+      run: |
+        mkdir build
+        cd build
+        cmake .. -DCMAKE_BUILD_TYPE=Release
+        make -j$(nproc)
+
+    - name: Verify binary
+      run: |
+        ./build/got-audit --version
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: got-audit-fedora
+        path: build/got-audit
+        retention-days: 30
+
+  static-analysis:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          cmake \
+          libelf-dev \
+          cppcheck \
+          clang-tidy
+
+    - name: Run cppcheck
+      run: |
+        cppcheck \
+          --enable=warning,style,performance,portability \
+          --error-exitcode=0 \
+          --inline-suppr \
+          src/*.cpp include/*.h
+
+    - name: Configure for clang-tidy
+      run: |
+        mkdir build
+        cd build
+        cmake .. -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+    - name: Run clang-tidy
+      continue-on-error: true
+      run: |
+        clang-tidy \
+          src/*.cpp \
+          -p build \
+          --warnings-as-errors='' \
+          || true
+
+  documentation:
+    name: Documentation Check
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Install groff
+      run: sudo apt-get install -y groff
+
+    - name: Check man page syntax
+      run: |
+        groff -man -Tascii got-audit.1 > /dev/null
+        echo "Man page syntax is valid"
+
+    - name: Verify documentation files exist
+      run: |
+        test -f README.md
+        test -f LICENSE
+        test -f got-audit.1
+        echo "All required documentation files present"
