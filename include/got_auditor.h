@@ -33,13 +33,14 @@ struct GotEntry {
 
 class GotAuditor {
 public:
-    GotAuditor(ProcessMemory& proc_mem, bool audit_all);
+    GotAuditor(ProcessMemory& proc_mem, const std::string& main_executable, bool audit_all);
 
     bool build_symbol_index();
     std::vector<GotEntry> audit_got(const std::string& path);
 
 private:
     ProcessMemory& proc_mem_;
+    std::string main_executable_path_;
     bool audit_all_;
 
     std::map<std::string, std::vector<std::string>> symbols_to_paths_;

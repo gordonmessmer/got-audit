@@ -81,8 +81,9 @@ const std::set<std::string> GotAuditor::expected_duplicates_ = {
     "__b64_ntop", "__b64_pton"
 };
 
-GotAuditor::GotAuditor(ProcessMemory& proc_mem, bool audit_all)
+GotAuditor::GotAuditor(ProcessMemory& proc_mem, const std::string& main_executable, bool audit_all)
     : proc_mem_(proc_mem)
+    , main_executable_path_(main_executable)
     , audit_all_(audit_all) {
 }
 
@@ -193,7 +194,7 @@ void GotAuditor::check_for_warnings(GotEntry& entry) {
     auto& paths = symbols_to_paths_[entry.symbol_name];
     if (paths.size() > 1 && expected_duplicates_.find(entry.symbol_name) == expected_duplicates_.end()) {
         bool only_in_main = (paths.size() == 2 &&
-            (std::find(paths.begin(), paths.end(), entry.source_path) != paths.end()));
+            (std::find(paths.begin(), paths.end(), main_executable_path_) != paths.end()));
 
         if (!only_in_main) {
             std::string warning = "ERROR " + entry.symbol_name + " found in multiple paths (";

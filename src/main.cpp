@@ -108,13 +108,6 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Successfully attached to process " << pid << "\n";
 
-    GotAuditor auditor(proc_mem, audit_all);
-    if (!auditor.build_symbol_index()) {
-        std::cerr << "Failed to build symbol index\n";
-        proc_mem.detach();
-        return 1;
-    }
-
     std::string main_executable_path;
     for (const auto& mapping : proc_mem.get_memory_maps()) {
         if (!mapping.path.empty() && mapping.path[0] == '/' && mapping.is_executable()) {
@@ -125,6 +118,13 @@ int main(int argc, char* argv[]) {
 
     if (main_executable_path.empty()) {
         std::cerr << "Could not determine main executable path\n";
+        proc_mem.detach();
+        return 1;
+    }
+
+    GotAuditor auditor(proc_mem, main_executable_path, audit_all);
+    if (!auditor.build_symbol_index()) {
+        std::cerr << "Failed to build symbol index\n";
         proc_mem.detach();
         return 1;
     }
