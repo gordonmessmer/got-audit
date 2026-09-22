@@ -28,7 +28,20 @@ struct GotEntry {
     uint64_t resolved_address;
     std::string resolved_path;
     bool is_resolved;
+    // Version requirement of this reference, carried from the relocation so the
+    // auditor can apply the loader's resolution rules (see docs/alerting.md).
+    bool ref_versioned = false;
+    std::string ref_version;
     std::vector<std::string> warnings;
+};
+
+// One definition of a symbol found in a particular library, with the versioning
+// attributes that decide whether it can legitimately satisfy a given reference.
+struct SymbolDefLoc {
+    std::string path;
+    std::string version;   // empty = unversioned definition
+    bool is_default;       // @@ default node or unversioned
+    unsigned char bind;    // STB_GLOBAL (strong) or STB_WEAK
 };
 
 class GotAuditor {
@@ -43,9 +56,14 @@ private:
     std::string main_executable_path_;
     bool audit_all_;
 
-    std::map<std::string, std::vector<std::string>> symbols_to_paths_;
-    std::map<std::string, std::vector<std::string>> paths_to_symbols_;
+    // Every strong/weak definition seen, keyed by base symbol name, so the
+    // reference-driven candidate set can be computed per GOT entry.
+    std::map<std::string, std::vector<SymbolDefLoc>> defs_by_symbol_;
+    // Libraries whose symbols have been indexed; used to avoid re-parsing and to
+    // scope the resolution-consistency check to objects we actually know about.
+    std::set<std::string> indexed_paths_;
 
+    // Allowlist for Alert 1 (ambiguous duplicates) only; see docs/alerting.md.
     static const std::set<std::string> expected_duplicates_;
 
     void index_symbols_from_path(const std::string& path);

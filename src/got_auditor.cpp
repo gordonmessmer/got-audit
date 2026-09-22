@@ -16,60 +16,26 @@
 #include "got_auditor.h"
 #include <iostream>
 #include <algorithm>
+#include <elf.h>
 
+// Allowlist for Alert 1 (ambiguous resolution) only. See docs/alerting.md: the
+// reference-driven duplicate rule already resolves the vast majority of the old
+// hard-coded entries, because references are versioned and bind deterministically
+// (Samba private libs, libc-vs-libtirpc xdr_*, weak math aliases, ...). What
+// remains here are genuinely-duplicated *strong* definitions that stay ambiguous
+// under the rule but are known-good. This list never suppresses Alert 2.
+//
+// Each group is labelled with the libraries the duplication comes from, so a
+// future addition can be attributed the same way.
 const std::set<std::string> GotAuditor::expected_duplicates_ = {
-    "__cxa_finalize",
-    "copysign", "copysignf", "copysignl", "__finite", "finite",
-    "__finitef", "finitef", "__finitel", "finitel", "frexp",
-    "frexpf", "frexpl", "ldexp", "ldexpf", "ldexpl", "modf",
-    "modff", "modfl", "scalbn", "scalbnf", "scalbnl", "__signbit",
-    "__signbitf", "__signbitl",
-    "fgetxattr", "flistxattr", "fremovexattr", "fsetxattr",
-    "getxattr", "lgetxattr", "listxattr", "llistxattr",
-    "lremovexattr", "lsetxattr", "removexattr", "setxattr",
-    "authdes_create", "authdes_pk_create", "_authenticate",
-    "authnone_create", "authunix_create",
-    "authunix_create_default", "bindresvport", "callrpc",
-    "clnt_broadcast", "clnt_create", "clnt_pcreateerror",
-    "clnt_perrno", "clnt_perror", "clntraw_create",
-    "clnt_spcreateerror", "clnt_sperrno", "clnt_sperror",
-    "clnttcp_create", "clntudp_bufcreate", "clntudp_create",
-    "clntunix_create", "get_myaddress", "getnetname",
-    "getpublickey", "getrpcport", "host2netname",
-    "key_decryptsession", "key_decryptsession_pk",
-    "key_encryptsession", "key_encryptsession_pk", "key_gendes",
-    "key_get_conv", "key_secretkey_is_set", "key_setnet",
-    "key_setsecret", "__libc_clntudp_bufcreate", "netname2host",
-    "netname2user", "pmap_getmaps", "pmap_getport",
-    "pmap_rmtcall", "pmap_set", "pmap_unset", "registerrpc",
-    "_rpc_dtablesize", "rtime", "_seterr_reply", "svcerr_auth",
-    "svcerr_decode", "svcerr_noproc", "svcerr_noprog",
-    "svcerr_progvers", "svcerr_systemerr", "svcerr_weakauth",
-    "svc_exit", "svcfd_create", "svc_getreq", "svc_getreq_common",
-    "svc_getreq_poll", "svc_getreqset", "svcraw_create",
-    "svc_register", "svc_run", "svc_sendreply", "svctcp_create",
-    "svcudp_bufcreate", "svcudp_create", "svcunix_create",
-    "svcunixfd_create", "svc_unregister", "user2netname",
-    "xdr_accepted_reply", "xdr_array", "xdr_authunix_parms",
-    "xdr_bool", "xdr_bytes", "xdr_callhdr", "xdr_callmsg",
-    "xdr_char", "xdr_cryptkeyarg", "xdr_cryptkeyarg2",
-    "xdr_cryptkeyres", "xdr_des_block", "xdr_double", "xdr_enum",
-    "xdr_float", "xdr_free", "xdr_getcredres", "xdr_hyper",
-    "xdr_int", "xdr_int16_t", "xdr_int32_t", "xdr_int64_t",
-    "xdr_int8_t", "xdr_keybuf", "xdr_key_netstarg",
-    "xdr_key_netstres", "xdr_keystatus", "xdr_long",
-    "xdr_longlong_t", "xdrmem_create", "xdr_netnamestr",
-    "xdr_netobj", "xdr_opaque", "xdr_opaque_auth", "xdr_pmap",
-    "xdr_pmaplist", "xdr_pointer", "xdr_quad_t", "xdrrec_create",
-    "xdrrec_endofrecord", "xdrrec_eof", "xdrrec_skiprecord",
-    "xdr_reference", "xdr_rejected_reply", "xdr_replymsg",
-    "xdr_rmtcall_args", "xdr_rmtcallres", "xdr_short",
-    "xdr_sizeof", "xdrstdio_create", "xdr_string", "xdr_u_char",
-    "xdr_u_hyper", "xdr_u_int", "xdr_uint16_t", "xdr_uint32_t",
-    "xdr_uint64_t", "xdr_uint8_t", "xdr_u_long",
-    "xdr_u_longlong_t", "xdr_union", "xdr_unixcred",
-    "xdr_u_quad_t", "xdr_u_short", "xdr_vector", "xdr_void",
-    "xdr_wrapstring", "xprt_register", "xprt_unregister",
+    // Symbols that appear in both GNU's libc.so and libm.so under the same
+    // strong, default version node, so a reference can bind to either.
+    "__finite", "__finitef", "__finitel",
+    "__signbit", "__signbitf", "__signbitl",
+
+    // Symbols exported unversioned by libsasl2 and by the auth mechanism plugins
+    // it loads (libsasldb and the per-mechanism plugins). The plugins are loaded
+    // by libsasl2 itself, so the shared _plug_* helpers are duplicated by design.
     "_plug_buf_alloc", "_plug_challenge_prompt", "_plug_decode",
     "_plug_decode_free", "_plug_decode_init", "_plug_find_prompt",
     "_plug_free_secret", "_plug_free_string",
@@ -78,8 +44,25 @@ const std::set<std::string> GotAuditor::expected_duplicates_ = {
     "_plug_ipfromstring", "_plug_make_fulluser",
     "_plug_make_prompts", "_plug_parseuser",
     "_plug_snprintf_os_info", "_plug_strdup",
+
+    // Base64 helpers exported by GNU's libresolv and vendored, unversioned, into
+    // libvncserver; either can satisfy an unversioned reference.
     "__b64_ntop", "__b64_pton"
 };
+
+// Whether a definition can legitimately satisfy a reference, following the GNU
+// loader's check_match rules (see docs/alerting.md):
+//   - a versioned reference binds to a matching version node OR any unversioned
+//     definition (the interposition wildcard);
+//   - an unversioned reference binds only to a default definition.
+static bool def_satisfies_ref(const SymbolDefLoc& def,
+                              bool ref_versioned,
+                              const std::string& ref_version) {
+    if (ref_versioned) {
+        return def.version == ref_version || def.version.empty();
+    }
+    return def.is_default;
+}
 
 GotAuditor::GotAuditor(ProcessMemory& proc_mem, const std::string& main_executable, bool audit_all)
     : proc_mem_(proc_mem)
@@ -108,20 +91,26 @@ bool GotAuditor::build_symbol_index() {
 }
 
 void GotAuditor::index_symbols_from_path(const std::string& path) {
-    if (paths_to_symbols_.find(path) != paths_to_symbols_.end()) {
+    if (indexed_paths_.find(path) != indexed_paths_.end()) {
         return;
     }
+    indexed_paths_.insert(path);
 
     ElfParser parser(path);
     if (!parser.parse()) {
         return;
     }
 
-    std::vector<std::string> symbols = parser.get_exported_symbols();
-    paths_to_symbols_[path] = symbols;
-
-    for (const auto& symbol : symbols) {
-        symbols_to_paths_[symbol].push_back(path);
+    for (const auto& sym : parser.get_symbol_definitions()) {
+        const std::string& name = sym.first;
+        for (const auto& def : sym.second) {
+            SymbolDefLoc loc;
+            loc.path = path;
+            loc.version = def.version;
+            loc.is_default = def.is_default;
+            loc.bind = def.bind;
+            defs_by_symbol_[name].push_back(loc);
+        }
     }
 }
 
@@ -156,6 +145,8 @@ std::vector<GotEntry> GotAuditor::audit_got(const std::string& path) {
         entry.symbol_name = reloc.symbol_name;
         entry.source_path = path;
         entry.got_offset = reloc.offset;
+        entry.ref_versioned = reloc.versioned;
+        entry.ref_version = reloc.version;
 
         if (parser.is_pie()) {
             entry.got_address = base_address + reloc.offset;
@@ -191,32 +182,106 @@ void GotAuditor::check_for_warnings(GotEntry& entry) {
         return;
     }
 
-    auto& paths = symbols_to_paths_[entry.symbol_name];
-    if (paths.size() > 1 && expected_duplicates_.find(entry.symbol_name) == expected_duplicates_.end()) {
-        bool only_in_main = (paths.size() == 2 &&
-            (std::find(paths.begin(), paths.end(), main_executable_path_) != paths.end()));
+    auto it = defs_by_symbol_.find(entry.symbol_name);
+    const std::vector<SymbolDefLoc>* defs =
+        (it != defs_by_symbol_.end()) ? &it->second : nullptr;
 
-        if (!only_in_main) {
+    // ---- Alert 1: ambiguous resolution (the duplicate rule) -----------------
+    // Count the distinct libraries holding a *strong* definition that could
+    // legitimately satisfy this reference. Two or more means the binding is
+    // load-order-dependent, i.e. a latent hijack. See docs/alerting.md.
+    if (defs && expected_duplicates_.find(entry.symbol_name) == expected_duplicates_.end()) {
+        std::set<std::string> strong_candidate_libs;
+        for (const auto& def : *defs) {
+            if (def.bind == STB_GLOBAL &&
+                def_satisfies_ref(def, entry.ref_versioned, entry.ref_version)) {
+                strong_candidate_libs.insert(def.path);
+            }
+        }
+
+        // An executable providing its own copy of a single library symbol is a
+        // legitimate pattern, not an ambiguous resolution.
+        bool only_in_main = (strong_candidate_libs.size() == 2 &&
+            strong_candidate_libs.count(main_executable_path_) != 0);
+
+        if (strong_candidate_libs.size() > 1 && !only_in_main) {
             std::string warning = "ERROR " + entry.symbol_name + " found in multiple paths (";
-            for (size_t i = 0; i < paths.size(); i++) {
-                if (i > 0) warning += ", ";
-                warning += paths[i];
+            bool first = true;
+            for (const auto& lib : strong_candidate_libs) {
+                if (!first) warning += ", ";
+                warning += lib;
+                first = false;
             }
             warning += ")";
             entry.warnings.push_back(warning);
         }
     }
 
-    if (entry.resolved_path != "[vdso]" &&
-        entry.resolved_path != entry.source_path) {
+    // ---- Alert 2: illegitimate resolution (the hijack detector) -------------
+    // Check the definition the GOT slot actually resolves to against what the
+    // loader's rules would allow. Not subject to the allowlist.
+    if (entry.resolved_path == "[vdso]" ||
+        entry.resolved_path == entry.source_path ||
+        indexed_paths_.find(entry.resolved_path) == indexed_paths_.end()) {
+        return;
+    }
 
-        auto it = paths_to_symbols_.find(entry.resolved_path);
-        if (it != paths_to_symbols_.end()) {
-            const auto& exported = it->second;
-            if (std::find(exported.begin(), exported.end(), entry.symbol_name) == exported.end()) {
-                std::string warning = "ERROR " + entry.symbol_name +
-                                    " not exported by " + entry.resolved_path;
-                entry.warnings.push_back(warning);
+    std::vector<const SymbolDefLoc*> resolved_defs;
+    if (defs) {
+        for (const auto& def : *defs) {
+            if (def.path == entry.resolved_path) {
+                resolved_defs.push_back(&def);
+            }
+        }
+    }
+
+    // (a) The resolved library does not define this symbol at all.
+    if (resolved_defs.empty()) {
+        entry.warnings.push_back("ERROR " + entry.symbol_name +
+                                 " not exported by " + entry.resolved_path);
+        return;
+    }
+
+    // (b)/(c) No definition in the resolved library can legally satisfy the
+    // reference: version mismatch (versioned ref), or a non-default node captured
+    // an unversioned ref.
+    bool resolved_can_satisfy = false;
+    bool resolved_has_strong = false;
+    for (const auto* def : resolved_defs) {
+        if (def_satisfies_ref(*def, entry.ref_versioned, entry.ref_version)) {
+            resolved_can_satisfy = true;
+            if (def->bind == STB_GLOBAL) {
+                resolved_has_strong = true;
+            }
+        }
+    }
+
+    if (!resolved_can_satisfy) {
+        if (entry.ref_versioned) {
+            entry.warnings.push_back("ERROR " + entry.symbol_name +
+                " resolved to " + entry.resolved_path +
+                " which does not provide version " + entry.ref_version +
+                " (nor an unversioned definition)");
+        } else {
+            entry.warnings.push_back("ERROR " + entry.symbol_name +
+                " resolved to a non-default version in " + entry.resolved_path +
+                " for an unversioned reference");
+        }
+        return;
+    }
+
+    // (d) The resolved definition is only weak, yet a strong definition that can
+    // satisfy the reference exists elsewhere. The loader prefers strong
+    // regardless of load order, so this binding is anomalous.
+    if (!resolved_has_strong && defs) {
+        for (const auto& def : *defs) {
+            if (def.path != entry.resolved_path &&
+                def.bind == STB_GLOBAL &&
+                def_satisfies_ref(def, entry.ref_versioned, entry.ref_version)) {
+                entry.warnings.push_back("ERROR " + entry.symbol_name +
+                    " resolved to a weak definition in " + entry.resolved_path +
+                    " while a strong definition exists in " + def.path);
+                break;
             }
         }
     }

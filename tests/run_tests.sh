@@ -202,7 +202,107 @@ test_no_false_duplicates() {
     fi
 }
 
-# Test 7: Verify man page exists
+# Test 7: Positive control - a genuinely ambiguous symbol must be detected.
+# Two shared libraries export the same strong, default, unversioned symbol; a
+# program links against both and calls it. got-audit's Alert 1 must report it.
+# This guards against a dead detector: a clean run only proves silence, not that
+# the tool can still speak.
+test_detects_duplicate_symbol() {
+    info "Testing detection of an ambiguous duplicate symbol..."
+
+    local dupdir
+    dupdir="$(mktemp -d)"
+    gcc -shared -fPIC -o "$dupdir/liba.so" "$SCRIPT_DIR/dup_lib_a.c" 2>/dev/null
+    gcc -shared -fPIC -o "$dupdir/libb.so" "$SCRIPT_DIR/dup_lib_b.c" 2>/dev/null
+    gcc -o "$dupdir/dup_main" "$SCRIPT_DIR/dup_main.c" \
+        -L"$dupdir" -la -lb -Wl,-rpath,"$dupdir" 2>/dev/null
+    if [ ! -x "$dupdir/dup_main" ]; then
+        fail "Could not build duplicate-symbol fixture"
+        rm -rf "$dupdir"
+        return
+    fi
+
+    "$dupdir/dup_main" > /dev/null 2>&1 &
+    local pid=$!
+    sleep 1
+    if ! kill -0 $pid 2>/dev/null; then
+        fail "Duplicate-symbol fixture failed to start"
+        rm -rf "$dupdir"
+        return
+    fi
+
+    local output
+    if [ "$(id -u)" -eq 0 ]; then
+        output=$("$AUDIT_BIN" $pid 2>&1)
+    else
+        output=$(sudo "$AUDIT_BIN" $pid 2>&1)
+    fi
+
+    kill -TERM $pid 2>/dev/null
+    wait $pid 2>/dev/null
+
+    if echo "$output" | grep -q "ERROR shared_target found in multiple paths"; then
+        pass "Detects ambiguous duplicate symbol (Alert 1)"
+    else
+        fail "Did not detect ambiguous duplicate symbol"
+        echo "$output" | grep -i "shared_target" || echo "    (no shared_target line in output)"
+    fi
+
+    rm -rf "$dupdir"
+}
+
+# Test 8: Positive control for versioned symbols - an attacker exporting the
+# symbol it steals under the same version node as the real owner must still be
+# reported. Two libraries export ver_target@@MYVER_1.0 (strong, default); a
+# program references the versioned symbol and calls it. Alert 1 must fire,
+# exercising the version-matching candidate path (the OpenSSL-like case).
+test_detects_versioned_duplicate() {
+    info "Testing detection of a versioned duplicate symbol..."
+
+    local vdir
+    vdir="$(mktemp -d)"
+    gcc -shared -fPIC -Wl,--version-script="$SCRIPT_DIR/ver.map" \
+        -o "$vdir/liba.so" "$SCRIPT_DIR/ver_lib_a.c" 2>/dev/null
+    gcc -shared -fPIC -Wl,--version-script="$SCRIPT_DIR/ver.map" \
+        -o "$vdir/libb.so" "$SCRIPT_DIR/ver_lib_b.c" 2>/dev/null
+    gcc -o "$vdir/ver_main" "$SCRIPT_DIR/ver_main.c" \
+        -L"$vdir" -la -lb -Wl,--no-as-needed -Wl,-rpath,"$vdir" 2>/dev/null
+    if [ ! -x "$vdir/ver_main" ]; then
+        fail "Could not build versioned-duplicate fixture"
+        rm -rf "$vdir"
+        return
+    fi
+
+    "$vdir/ver_main" > /dev/null 2>&1 &
+    local pid=$!
+    sleep 1
+    if ! kill -0 $pid 2>/dev/null; then
+        fail "Versioned-duplicate fixture failed to start"
+        rm -rf "$vdir"
+        return
+    fi
+
+    local output
+    if [ "$(id -u)" -eq 0 ]; then
+        output=$("$AUDIT_BIN" $pid 2>&1)
+    else
+        output=$(sudo "$AUDIT_BIN" $pid 2>&1)
+    fi
+
+    kill -TERM $pid 2>/dev/null
+    wait $pid 2>/dev/null
+
+    if echo "$output" | grep -q "ERROR ver_target found in multiple paths"; then
+        pass "Detects versioned duplicate symbol (Alert 1, version match)"
+    else
+        fail "Did not detect versioned duplicate symbol"
+        echo "$output" | grep -i "ver_target" || echo "    (no ver_target line in output)"
+    fi
+
+    rm -rf "$vdir"
+}
+
+# Test 9: Verify man page exists
 test_man_page() {
     if [ -f "$PROJECT_DIR/got-audit.1" ]; then
         pass "Man page exists"
@@ -236,6 +336,8 @@ main() {
     test_audit_program
     test_all_flag
     test_no_false_duplicates
+    test_detects_duplicate_symbol
+    test_detects_versioned_duplicate
     test_man_page
 
     # Cleanup

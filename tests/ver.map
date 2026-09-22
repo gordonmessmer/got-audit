@@ -1,0 +1,6 @@
+MYVER_1.0 {
+    global:
+        ver_target;
+    local:
+        *;
+};

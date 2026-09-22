@@ -71,6 +71,10 @@ bool ElfParser::parse() {
 
     is_pie_ = (ehdr.e_type == ET_DYN);
 
+    if (!parse_versions()) {
+        return false;
+    }
+
     if (!parse_dynamic_symbols()) {
         return false;
     }
@@ -81,6 +85,103 @@ bool ElfParser::parse() {
 
     if (!check_relro()) {
         return false;
+    }
+
+    return true;
+}
+
+// VERSYM_HIDDEN marks a .gnu.version entry as referring to a non-default node.
+static const uint16_t kVersymHidden = 0x8000;
+
+// Read the symbol-versioning sections (.gnu.version, .gnu.version_d,
+// .gnu.version_r) so that each definition and each reference can be tagged with
+// its version node. Without this, the version requirement of a GOT reference and
+// the default/non-default status of a definition are unknown, and the auditor
+// falls back to treating every symbol as unversioned.
+bool ElfParser::parse_versions() {
+    Elf* elf = static_cast<Elf*>(elf_handle_);
+    Elf_Scn* scn = nullptr;
+
+    while ((scn = elf_nextscn(elf, scn)) != nullptr) {
+        GElf_Shdr shdr;
+        if (!gelf_getshdr(scn, &shdr)) {
+            continue;
+        }
+
+        if (shdr.sh_type == SHT_GNU_versym) {
+            Elf_Data* data = elf_getdata(scn, nullptr);
+            if (!data) {
+                continue;
+            }
+            size_t count = (shdr.sh_entsize != 0) ? shdr.sh_size / shdr.sh_entsize
+                                                   : shdr.sh_size / sizeof(GElf_Versym);
+            versym_.resize(count, 1);
+            for (size_t i = 0; i < count; i++) {
+                GElf_Versym vs;
+                if (gelf_getversym(data, i, &vs)) {
+                    versym_[i] = vs;
+                }
+            }
+        } else if (shdr.sh_type == SHT_GNU_verdef) {
+            Elf_Data* data = elf_getdata(scn, nullptr);
+            if (!data) {
+                continue;
+            }
+            size_t offset = 0;
+            for (unsigned int i = 0; i < shdr.sh_info; i++) {
+                GElf_Verdef vd;
+                if (!gelf_getverdef(data, offset, &vd)) {
+                    break;
+                }
+                // The first auxiliary entry holds the version node's own name;
+                // the base entry (VER_FLG_BASE) names the object itself, not a
+                // real version node, so it is skipped.
+                if (!(vd.vd_flags & VER_FLG_BASE)) {
+                    GElf_Verdaux vda;
+                    if (gelf_getverdaux(data, offset + vd.vd_aux, &vda)) {
+                        const char* nm = elf_strptr(elf, shdr.sh_link, vda.vda_name);
+                        if (nm) {
+                            verdef_names_[vd.vd_ndx & 0x7fff] = nm;
+                        }
+                    }
+                }
+                if (vd.vd_next == 0) {
+                    break;
+                }
+                offset += vd.vd_next;
+            }
+        } else if (shdr.sh_type == SHT_GNU_verneed) {
+            Elf_Data* data = elf_getdata(scn, nullptr);
+            if (!data) {
+                continue;
+            }
+            size_t offset = 0;
+            for (unsigned int i = 0; i < shdr.sh_info; i++) {
+                GElf_Verneed vn;
+                if (!gelf_getverneed(data, offset, &vn)) {
+                    break;
+                }
+                size_t aux_off = offset + vn.vn_aux;
+                for (unsigned int j = 0; j < vn.vn_cnt; j++) {
+                    GElf_Vernaux vna;
+                    if (!gelf_getvernaux(data, aux_off, &vna)) {
+                        break;
+                    }
+                    const char* nm = elf_strptr(elf, shdr.sh_link, vna.vna_name);
+                    if (nm) {
+                        verneed_names_[vna.vna_other & 0x7fff] = nm;
+                    }
+                    if (vna.vna_next == 0) {
+                        break;
+                    }
+                    aux_off += vna.vna_next;
+                }
+                if (vn.vn_next == 0) {
+                    break;
+                }
+                offset += vn.vn_next;
+            }
+        }
     }
 
     return true;
@@ -127,11 +228,10 @@ bool ElfParser::parse_dynamic_symbols() {
 
             if (type == STT_FUNC || type == STT_GNU_IFUNC || type == STT_NOTYPE) {
                 if (bind == STB_GLOBAL || bind == STB_WEAK) {
+                    // The st_name string never carries an @version suffix; the
+                    // version comes from the .gnu.version tables indexed by the
+                    // symbol's own dynsym index.
                     std::string sym_name(name);
-                    size_t at_pos = sym_name.find('@');
-                    if (at_pos != std::string::npos) {
-                        sym_name = sym_name.substr(0, at_pos);
-                    }
 
                     SymbolInfo info;
                     info.name = sym_name;
@@ -139,8 +239,20 @@ bool ElfParser::parse_dynamic_symbols() {
                     info.size = sym.st_size;
                     info.bind = bind;
                     info.type = type;
+                    info.version.clear();
+                    info.is_default = true;
 
-                    dynamic_symbols_[sym_name] = info;
+                    uint16_t raw = (i < versym_.size()) ? versym_[i] : 1;
+                    uint16_t vndx = raw & 0x7fff;
+                    if (vndx > 1) {
+                        auto it = verdef_names_.find(vndx);
+                        if (it != verdef_names_.end()) {
+                            info.version = it->second;
+                        }
+                        info.is_default = !(raw & kVersymHidden);
+                    }
+
+                    dynamic_symbols_[sym_name].push_back(info);
                 }
             }
         }
@@ -232,11 +344,27 @@ bool ElfParser::parse_relocations() {
             RelocationEntry entry;
             entry.offset = offset;
             entry.symbol_name = name;
+            entry.versioned = false;
 
-            size_t at_pos = entry.symbol_name.find('@');
-            if (at_pos != std::string::npos) {
-                entry.version = entry.symbol_name.substr(at_pos + 1);
-                entry.symbol_name = entry.symbol_name.substr(0, at_pos);
+            // The reference's version requirement comes from .gnu.version indexed
+            // by the referenced symbol's dynsym index; an undefined symbol's need
+            // is described in .gnu.version_r (verneed).
+            uint16_t raw = (sym_idx < versym_.size()) ? versym_[sym_idx] : 1;
+            uint16_t vndx = raw & 0x7fff;
+            if (vndx > 1) {
+                auto it = verneed_names_.find(vndx);
+                if (it != verneed_names_.end()) {
+                    entry.version = it->second;
+                    entry.versioned = true;
+                } else {
+                    // Fall back to a locally defined version node (rare for an
+                    // undefined reference, but keeps the tag consistent).
+                    auto it2 = verdef_names_.find(vndx);
+                    if (it2 != verdef_names_.end()) {
+                        entry.version = it2->second;
+                        entry.versioned = true;
+                    }
+                }
             }
 
             jump_slots_.push_back(entry);

@@ -78,22 +78,36 @@ got-audit/
 
 ### Critical Implementation Details
 
-#### Duplicate Symbol Detection
+#### Alerting logic
 
-The logic for "acceptable duplicates" is nuanced:
+`GotAuditor::check_for_warnings()` raises two independent kinds of alert, both
+derived from a model of how the GNU loader resolves a symbol (version node,
+default/non-default, strong/weak):
 
-```cpp
-bool only_in_main = (paths.size() == 2 &&
-    (std::find(paths.begin(), paths.end(), main_executable_path_) != paths.end()));
-```
+1. **Alert 1 — ambiguous resolution:** for each GOT reference, count the distinct
+   libraries holding a *strong* definition that could legitimately satisfy that
+   reference; two or more means a load-order-dependent (latent-hijack) binding.
+2. **Alert 2 — illegitimate resolution:** check the definition the GOT slot
+   *actually* resolves to against what the loader's rules allow, catching raw GOT
+   patching (including the motivating IFUNC-based attack) and weak/non-default
+   captures.
 
-This means: "If a symbol is defined in exactly two places, and one of them is the main executable, don't warn."
+The full rationale — the resolution model, the motivating xz/IFUNC attack, and
+why the design uses two alerts — is documented in
+[`docs/alerting.md`](docs/alerting.md).
 
-Rationale: Main executables may redefine symbols from libraries for their own use.
+A reference defined in the main executable plus exactly one library is not
+reported by Alert 1: an executable may legitimately provide its own copy of a
+library symbol.
 
-#### Known Duplicate Symbols
+#### Known Duplicate Symbols (allowlist)
 
-`GotAuditor::expected_duplicates_` contains symbols that are legitimately exported by multiple libraries (e.g., math functions in both libc and libm). These never generate warnings.
+`GotAuditor::expected_duplicates_` suppresses **Alert 1 only** for a small set of
+genuinely-duplicated strong symbols that are known-good (libc/libm math internals,
+libsasl2 and its plugins, libresolv/libvncserver base64 helpers). The reference-
+driven rule makes the old ~200-entry list unnecessary; entries are grouped and
+labelled by origin so any future addition can be attributed the same way. The
+allowlist never suppresses Alert 2.
 
 #### Symbol Filtering
 
