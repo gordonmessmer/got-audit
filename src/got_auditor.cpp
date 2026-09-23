@@ -47,7 +47,78 @@ const std::set<std::string> GotAuditor::expected_duplicates_ = {
 
     // Base64 helpers exported by GNU's libresolv and vendored, unversioned, into
     // libvncserver; either can satisfy an unversioned reference.
-    "__b64_ntop", "__b64_pton"
+    "__b64_ntop", "__b64_pton",
+
+    // Samba NDR marshalling routines statically compiled into more than one of the
+    // private *-private-samba.so libraries (seen in libcli-smb-common-private-samba
+    // and libndr-samba4-private-samba). They are generated from the same IDL and
+    // linked into each library that needs them, so the same strong, versioned
+    // (SAMBA_*_PRIVATE_SAMBA) definition appears in several libraries at once. This
+    // is a genuine Alert-1 ambiguity, but a benign one: every copy is the same
+    // generated code. Note these libraries are *not* linked -Bsymbolic, so an
+    // intra-library reference does not deterministically self-bind -- which is why
+    // this is allowlisted by name rather than exempted as "resolves into itself."
+    // --- ndr_print_ (30) ---
+    "ndr_print_compression_state", "ndr_print_device_copy_offload_descriptor",
+    "ndr_print_file_alloced_range_buf", "ndr_print_file_level_trim_range",
+    "ndr_print_file_zero_data_info", "ndr_print_fsctl_dup_extents_to_file",
+    "ndr_print_fsctl_file_level_trim_req",
+    "ndr_print_fsctl_file_level_trim_rsp",
+    "ndr_print_fsctl_net_iface_capability", "ndr_print_fsctl_net_iface_info",
+    "ndr_print_fsctl_offload_read_input",
+    "ndr_print_fsctl_offload_read_output",
+    "ndr_print_fsctl_offload_write_input",
+    "ndr_print_fsctl_offload_write_output", "ndr_print_fsctl_pipe_wait",
+    "ndr_print_fsctl_query_alloced_ranges_req",
+    "ndr_print_fsctl_query_alloced_ranges_rsp",
+    "ndr_print_fsctl_set_zero_data_req", "ndr_print_fsctl_sockaddr_af",
+    "ndr_print_fsctl_sockaddr_in", "ndr_print_fsctl_sockaddr_in6",
+    "ndr_print_fsctl_sockaddr_storage", "ndr_print_fsctl_sockaddr_union",
+    "ndr_print_network_resiliency_request", "ndr_print_offload_flags",
+    "ndr_print_req_resume_key_rsp", "ndr_print_srv_copychunk",
+    "ndr_print_srv_copychunk_copy", "ndr_print_srv_copychunk_rsp",
+    "ndr_print_storage_offload_token",
+    // --- ndr_pull_ (23) ---
+    "ndr_pull_compression_state", "ndr_pull_device_copy_offload_descriptor",
+    "ndr_pull_file_alloced_range_buf", "ndr_pull_file_level_trim_range",
+    "ndr_pull_file_zero_data_info", "ndr_pull_fsctl_dup_extents_to_file",
+    "ndr_pull_fsctl_file_level_trim_req",
+    "ndr_pull_fsctl_file_level_trim_rsp", "ndr_pull_fsctl_net_iface_info",
+    "ndr_pull_fsctl_offload_read_input", "ndr_pull_fsctl_offload_read_output",
+    "ndr_pull_fsctl_offload_write_input",
+    "ndr_pull_fsctl_offload_write_output", "ndr_pull_fsctl_pipe_wait",
+    "ndr_pull_fsctl_query_alloced_ranges_req",
+    "ndr_pull_fsctl_query_alloced_ranges_rsp",
+    "ndr_pull_fsctl_set_zero_data_req", "ndr_pull_network_resiliency_request",
+    "ndr_pull_offload_flags", "ndr_pull_req_resume_key_rsp",
+    "ndr_pull_srv_copychunk_copy", "ndr_pull_srv_copychunk_rsp",
+    "ndr_pull_storage_offload_token",
+    // --- ndr_push_ (23) ---
+    "ndr_push_compression_state", "ndr_push_device_copy_offload_descriptor",
+    "ndr_push_file_alloced_range_buf", "ndr_push_file_level_trim_range",
+    "ndr_push_file_zero_data_info", "ndr_push_fsctl_dup_extents_to_file",
+    "ndr_push_fsctl_file_level_trim_req",
+    "ndr_push_fsctl_file_level_trim_rsp", "ndr_push_fsctl_net_iface_info",
+    "ndr_push_fsctl_offload_read_input", "ndr_push_fsctl_offload_read_output",
+    "ndr_push_fsctl_offload_write_input",
+    "ndr_push_fsctl_offload_write_output", "ndr_push_fsctl_pipe_wait",
+    "ndr_push_fsctl_query_alloced_ranges_req",
+    "ndr_push_fsctl_query_alloced_ranges_rsp",
+    "ndr_push_fsctl_set_zero_data_req", "ndr_push_network_resiliency_request",
+    "ndr_push_offload_flags", "ndr_push_req_resume_key_rsp",
+    "ndr_push_srv_copychunk_copy", "ndr_push_srv_copychunk_rsp",
+    "ndr_push_storage_offload_token",
+    // --- ndr_table_ (7) ---
+    "ndr_table_compression", "ndr_table_copychunk", "ndr_table_fsctl",
+    "ndr_table_netinterface", "ndr_table_resiliency", "ndr_table_sparse",
+    "ndr_table_trim",
+
+    // Samba auth helper duplicated across two of the private auth libraries
+    // (libcliauth-private-samba and libcommon-auth-private-samba), both exporting
+    // it strong, default, versioned (SAMBA_*_PRIVATE_SAMBA). Same benign
+    // static-linked-into-several-libraries pattern as the ndr_* group above; it is
+    // the only strong symbol those two libraries share.
+    "log_escape"
 };
 
 // Whether a definition can legitimately satisfy a reference, following the GNU

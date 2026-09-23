@@ -302,7 +302,60 @@ test_detects_versioned_duplicate() {
     rm -rf "$vdir"
 }
 
-# Test 9: Verify man page exists
+# Test 9: Negative control - a symbol on the Alert-1 allowlist must NOT be
+# reported, even when it is genuinely ambiguous. This uses the *same* fixture as
+# test_detects_duplicate_symbol (two libraries exporting one strong, default,
+# unversioned symbol that a program calls) but builds it with an allowlisted
+# name. Without the allowlist this is exactly the Alert-1 case Test 7 detects, so
+# silence here proves the allowlist suppression path works and guards it against
+# regressions (e.g. a future refactor that drops the lookup). The name is a
+# stable, non-Samba entry so the test survives us revisiting the Samba group.
+test_allowlist_suppresses_duplicate() {
+    info "Testing that an allowlisted symbol does not trigger Alert 1..."
+
+    local sym="_plug_decode"
+    local adir
+    adir="$(mktemp -d)"
+    gcc -shared -fPIC -DDUP_SYM="$sym" -o "$adir/liba.so" "$SCRIPT_DIR/dup_lib_a.c" 2>/dev/null
+    gcc -shared -fPIC -DDUP_SYM="$sym" -o "$adir/libb.so" "$SCRIPT_DIR/dup_lib_b.c" 2>/dev/null
+    gcc -DDUP_SYM="$sym" -o "$adir/allow_main" "$SCRIPT_DIR/dup_main.c" \
+        -L"$adir" -la -lb -Wl,-rpath,"$adir" 2>/dev/null
+    if [ ! -x "$adir/allow_main" ]; then
+        fail "Could not build allowlist-suppression fixture"
+        rm -rf "$adir"
+        return
+    fi
+
+    "$adir/allow_main" > /dev/null 2>&1 &
+    local pid=$!
+    sleep 1
+    if ! kill -0 $pid 2>/dev/null; then
+        fail "Allowlist-suppression fixture failed to start"
+        rm -rf "$adir"
+        return
+    fi
+
+    local output
+    if [ "$(id -u)" -eq 0 ]; then
+        output=$("$AUDIT_BIN" $pid 2>&1)
+    else
+        output=$(sudo "$AUDIT_BIN" $pid 2>&1)
+    fi
+
+    kill -TERM $pid 2>/dev/null
+    wait $pid 2>/dev/null
+
+    if echo "$output" | grep -q "ERROR $sym found in multiple paths"; then
+        fail "Allowlisted symbol $sym still triggered Alert 1"
+        echo "$output" | grep "$sym"
+    else
+        pass "Allowlisted symbol does not trigger Alert 1"
+    fi
+
+    rm -rf "$adir"
+}
+
+# Test 10: Verify man page exists
 test_man_page() {
     if [ -f "$PROJECT_DIR/got-audit.1" ]; then
         pass "Man page exists"
@@ -338,6 +391,7 @@ main() {
     test_no_false_duplicates
     test_detects_duplicate_symbol
     test_detects_versioned_duplicate
+    test_allowlist_suppresses_duplicate
     test_man_page
 
     # Cleanup
