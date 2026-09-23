@@ -42,6 +42,8 @@ struct SymbolDefLoc {
     std::string version;   // empty = unversioned definition
     bool is_default;       // @@ default node or unversioned
     unsigned char bind;    // STB_GLOBAL (strong) or STB_WEAK
+    uint64_t value;        // st_value, to spot a weak alias of a same-address
+                           // strong symbol in the same object (see Alert 2 (d))
 };
 
 class GotAuditor {
@@ -62,6 +64,11 @@ private:
     // Libraries whose symbols have been indexed; used to avoid re-parsing and to
     // scope the resolution-consistency check to objects we actually know about.
     std::set<std::string> indexed_paths_;
+    // Per library, the addresses (st_value) that carry a strong (STB_GLOBAL)
+    // definition. Lets Alert 2 (d) recognise a weak definition that is merely an
+    // alias of a strong symbol at the same address in the same object -- the
+    // ubiquitous glibc idiom (backtrace over __backtrace) -- and not flag it.
+    std::map<std::string, std::set<uint64_t>> strong_addrs_by_path_;
 
     // Allowlist for Alert 1 (ambiguous duplicates) only; see docs/alerting.md.
     static const std::set<std::string> expected_duplicates_;

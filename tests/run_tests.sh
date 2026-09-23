@@ -355,7 +355,83 @@ test_allowlist_suppresses_duplicate() {
     rm -rf "$adir"
 }
 
-# Test 10: Verify man page exists
+# Build a two-library "weak resolution" fixture and audit it. The first library
+# (liba) is built from the source named in $1 and loaded ahead of weak_lib_b.c
+# (a strong wa_target), so liba wins the binding first-in-scope. Echoes the
+# got-audit output for wa_target so the caller can assert on Alert 2 (d).
+run_weak_fixture() {
+    local lib_a_src=$1
+    local wdir
+    wdir="$(mktemp -d)"
+    gcc -shared -fPIC -o "$wdir/liba.so" "$SCRIPT_DIR/$lib_a_src" 2>/dev/null
+    gcc -shared -fPIC -o "$wdir/libb.so" "$SCRIPT_DIR/weak_lib_b.c" 2>/dev/null
+    gcc -o "$wdir/weak_main" "$SCRIPT_DIR/weak_main.c" \
+        -L"$wdir" -la -lb -Wl,--no-as-needed -Wl,-rpath,"$wdir" 2>/dev/null
+    if [ ! -x "$wdir/weak_main" ]; then
+        rm -rf "$wdir"
+        return 1
+    fi
+
+    "$wdir/weak_main" > /dev/null 2>&1 &
+    local pid=$!
+    sleep 1
+    if ! kill -0 $pid 2>/dev/null; then
+        rm -rf "$wdir"
+        return 1
+    fi
+
+    if [ "$(id -u)" -eq 0 ]; then
+        "$AUDIT_BIN" --all $pid 2>&1
+    else
+        sudo "$AUDIT_BIN" --all $pid 2>&1
+    fi
+
+    kill -TERM $pid 2>/dev/null
+    wait $pid 2>/dev/null
+    rm -rf "$wdir"
+}
+
+# Test 10: Positive control for Alert 2 (d) - a GOT slot that resolves to a bare
+# weak definition while a strong definition exists in another object must be
+# reported. Guards the detector against being silenced by the alias exemption
+# added in Test 11.
+test_detects_weak_over_strong() {
+    info "Testing detection of a weak binding shadowing a strong definition..."
+    local output
+    output=$(run_weak_fixture weakonly_lib_a.c) || {
+        fail "Could not build weak-over-strong fixture"
+        return
+    }
+    if echo "$output" | grep -q "ERROR wa_target resolved to a weak definition"; then
+        pass "Detects weak binding while a strong definition exists (Alert 2 (d))"
+    else
+        fail "Did not detect weak-over-strong binding"
+        echo "$output" | grep -i "wa_target" || echo "    (no wa_target line in output)"
+    fi
+}
+
+# Test 11: Negative control for Alert 2 (d) - the glibc weak-alias idiom must NOT
+# be flagged. The resolved library exports a weak alias over a strong symbol at
+# the same address (like backtrace over __backtrace) while another object also
+# exports a strong copy. This is the same shape as Test 10 except liba's weak
+# definition aliases a local strong symbol, so silence proves the exemption
+# works without disabling the detector.
+test_weak_alias_not_flagged() {
+    info "Testing that a weak alias of a same-address strong symbol is not flagged..."
+    local output
+    output=$(run_weak_fixture weakalias_lib_a.c) || {
+        fail "Could not build weak-alias fixture"
+        return
+    }
+    if echo "$output" | grep -q "ERROR wa_target resolved to a weak definition"; then
+        fail "Weak alias of a same-address strong symbol was flagged"
+        echo "$output" | grep "wa_target"
+    else
+        pass "Weak alias of a same-address strong symbol is not flagged"
+    fi
+}
+
+# Test 12: Verify man page exists
 test_man_page() {
     if [ -f "$PROJECT_DIR/got-audit.1" ]; then
         pass "Man page exists"
@@ -392,6 +468,8 @@ main() {
     test_detects_duplicate_symbol
     test_detects_versioned_duplicate
     test_allowlist_suppresses_duplicate
+    test_detects_weak_over_strong
+    test_weak_alias_not_flagged
     test_man_page
 
     # Cleanup

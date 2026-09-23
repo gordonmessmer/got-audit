@@ -180,7 +180,12 @@ void GotAuditor::index_symbols_from_path(const std::string& path) {
             loc.version = def.version;
             loc.is_default = def.is_default;
             loc.bind = def.bind;
+            loc.value = def.value;
             defs_by_symbol_[name].push_back(loc);
+
+            if (def.bind == STB_GLOBAL && def.value != 0) {
+                strong_addrs_by_path_[path].insert(def.value);
+            }
         }
     }
 }
@@ -342,17 +347,36 @@ void GotAuditor::check_for_warnings(GotEntry& entry) {
     }
 
     // (d) The resolved definition is only weak, yet a strong definition that can
-    // satisfy the reference exists elsewhere. The loader prefers strong
-    // regardless of load order, so this binding is anomalous.
+    // satisfy the reference exists in another object. Such a binding can hide a
+    // hijack, so it is worth flagging -- but not when the weak definition is
+    // merely an alias of a strong symbol at the same address in the *same* object.
+    // That is the ubiquitous glibc idiom (e.g. backtrace as a weak alias of the
+    // strong __backtrace), where an alternative provider such as libunwind also
+    // exports a strong copy; the weak win is legitimate first-in-scope
+    // resolution, not an anomaly.
     if (!resolved_has_strong && defs) {
-        for (const auto& def : *defs) {
-            if (def.path != entry.resolved_path &&
-                def.bind == STB_GLOBAL &&
-                def_satisfies_ref(def, entry.ref_versioned, entry.ref_version)) {
-                entry.warnings.push_back("ERROR " + entry.symbol_name +
-                    " resolved to a weak definition in " + entry.resolved_path +
-                    " while a strong definition exists in " + def.path);
-                break;
+        bool weak_alias_of_local_strong = false;
+        auto sit = strong_addrs_by_path_.find(entry.resolved_path);
+        if (sit != strong_addrs_by_path_.end()) {
+            for (const auto* def : resolved_defs) {
+                if (def_satisfies_ref(*def, entry.ref_versioned, entry.ref_version) &&
+                    sit->second.count(def->value) != 0) {
+                    weak_alias_of_local_strong = true;
+                    break;
+                }
+            }
+        }
+
+        if (!weak_alias_of_local_strong) {
+            for (const auto& def : *defs) {
+                if (def.path != entry.resolved_path &&
+                    def.bind == STB_GLOBAL &&
+                    def_satisfies_ref(def, entry.ref_versioned, entry.ref_version)) {
+                    entry.warnings.push_back("ERROR " + entry.symbol_name +
+                        " resolved to a weak definition in " + entry.resolved_path +
+                        " while a strong definition exists in " + def.path);
+                    break;
+                }
             }
         }
     }

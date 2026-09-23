@@ -100,9 +100,11 @@ export acts as a **wildcard** that can capture a versioned reference. This is th
 `LD_PRELOAD` interposition path, and it is exactly how a malicious library steals
 a symbol that another library defines with a specific version.
 
-Among the definitions that *can* satisfy a reference, the loader prefers a
-**strong** definition over a **weak** one regardless of load order; only among
-equally-strong candidates does first-in-load-order win.
+Among the definitions that *can* satisfy a reference, the GNU loader by default
+takes the **first** one in the search scope regardless of binding: a weak
+definition is treated exactly like a strong one. (`STB_WEAK` is honoured over
+`STB_GLOBAL` only when `LD_DYNAMIC_WEAK` is set, which is off by default.) So
+binding does not decide the winner — scope order does.
 
 ## Alert 1 — ambiguous resolution (the duplicate rule)
 
@@ -132,7 +134,7 @@ library symbol for its own use.
 A small number of genuinely-duplicated **strong** symbols remain ambiguous under
 the rule above but are known-good; they live in `GotAuditor::expected_duplicates_`
 in `src/got_auditor.cpp`, grouped and labelled by origin (libc/libm, libsasl2 and
-its plugins, libresolv/libvncserver). The allowlist suppresses **Alert 1 only** —
+its plugins, libresolv/libvncserver, and Samba's private libraries). The allowlist suppresses **Alert 1 only** —
 it never suppresses Alert 2 — so an allowlisted symbol that is nonetheless
 resolved to a definition the loader would not pick is still reported.
 
@@ -152,12 +154,21 @@ allowlist. We alert when:
 - **(c) non-default capture** — the reference is unversioned, but the resolved
   definition is a **non-default** (`@`, hidden) node. Unversioned references are
   invisible to hidden nodes, so the loader would never bind here.
-- **(d) weak over strong** — the resolved definition is **weak**, yet another
-  library holds a **strong** definition that can satisfy the reference. The loader
-  prefers strong regardless of load order, so a weak binding while a strong one
-  exists is anomalous. This closes the gap Alert 1 leaves open: a single GOT slot
-  pointing at a weak/non-default definition in one library while the real strong
-  owner sits elsewhere is a hijack that duplicate-counting alone would miss.
+- **(d) weak shadowing a strong owner** — the resolved definition is **weak** and
+  is *not* an alias of a same-address strong symbol in the same object, yet another
+  library holds a **strong** definition that can satisfy the reference. An attacker
+  can export a stolen symbol as **weak** to stay under Alert 1's strong-only count
+  (see above); if that weak definition wins the binding while the real strong owner
+  sits elsewhere, that is the hijack duplicate-counting alone would miss.
+
+  The alias exemption matters because binding does not decide the winner: by
+  default the first definition in scope wins regardless of weak/strong, so the
+  common glibc idiom of a **weak alias over a strong symbol at the same address**
+  — e.g. `backtrace` over `__backtrace`, with an alternative provider such as
+  `libunwind` also exporting a strong `backtrace` — is legitimate first-in-scope
+  resolution, not an anomaly. got-audit recognises that idiom (a weak definition
+  whose address also carries a strong symbol in the same object) and does not flag
+  it.
 
 ## Why two alerts instead of one
 
