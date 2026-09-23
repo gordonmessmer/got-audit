@@ -10,11 +10,16 @@ on:
 jobs:
   build-and-test:
     name: Build and Test
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+      # got-audit attaches to the test processes with ptrace/process_vm_readv,
+      # which the default container seccomp profile blocks; allow it so the suite
+      # can audit the fixtures it starts.
+      options: --cap-add=SYS_PTRACE --security-opt seccomp=unconfined
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
         compiler: [gcc, clang]
 
     steps:
@@ -23,11 +28,13 @@ jobs:
 
     - name: Install dependencies
       run: |
-        sudo apt-get update
-        sudo apt-get install -y \
+        dnf install -y \
           cmake \
-          libelf-dev \
-          ${{ matrix.compiler == 'clang' && 'clang' || 'g++' }}
+          make \
+          git \
+          gcc-c++ \
+          elfutils-libelf-devel \
+          ${{ matrix.compiler == 'clang' && 'clang' || '' }}
 
     - name: Configure CMake
       env:
@@ -69,7 +76,8 @@ jobs:
           cmake \
           gcc-c++ \
           elfutils-libelf-devel \
-          make
+          make \
+          git
 
     - name: Build
       run: |
@@ -92,6 +100,8 @@ jobs:
   static-analysis:
     name: Static Analysis
     runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
 
     steps:
     - name: Checkout code
@@ -99,12 +109,14 @@ jobs:
 
     - name: Install dependencies
       run: |
-        sudo apt-get update
-        sudo apt-get install -y \
+        dnf install -y \
           cmake \
-          libelf-dev \
+          gcc-c++ \
+          elfutils-libelf-devel \
+          make \
+          git \
           cppcheck \
-          clang-tidy
+          clang-tools-extra
 
     - name: Run cppcheck
       run: |
@@ -132,13 +144,15 @@ jobs:
   documentation:
     name: Documentation Check
     runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v6
 
     - name: Install groff
-      run: sudo apt-get install -y groff
+      run: dnf install -y groff
 
     - name: Check man page syntax
       run: |
